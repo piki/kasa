@@ -13,7 +13,7 @@ Usage:
   `./kasa <ip-address> <json-blob>`
 
 There's a good list of JSON blobs to try here:  
-  https://github.com/softScheck/tplink-smartplug/blob/master/tplink-smarthome-commands.txt 
+  https://github.com/softScheck/tplink-smartplug/blob/master/tplink-smarthome-commands.txt  
 Especially: 
   - get bulb info: `./kasa <ip> '{"system":{"get_sysinfo":null}}'`
   - turn bulb on:  `./kasa <ip> '{"system":{"set_relay_state":{"state":1}}}'`
