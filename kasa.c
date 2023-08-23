@@ -72,7 +72,9 @@ int main(int argc, char* const* argv) {
 }
 
 static void usage(const char *prog) {
-	fprintf(stderr, "Usage:\n  %s ip json-command\n", prog);
+	fprintf(stderr, "Usage:\n");
+	fprintf(stderr, "  %s ip json-command\n", prog);
+	fprintf(stderr, "  %s scan > ~/.bulbs\n", prog);
 	exit(1);
 }
 
