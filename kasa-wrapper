@@ -1,0 +1,40 @@
+#!/bin/bash -e
+#
+# Wrapper script to call ./kasa binary with the right IP and json blob.  
+#
+# Usage example:
+#   ./kasa-wrapper lamp on
+
+usage() {
+	echo "Usage:"
+	echo "  $0 bulb-name {on|off}"
+	exit 1
+}
+
+[ $# -eq 2 ] || usage
+
+if [ ! -r ~/.bulbs ]; then
+	echo "~/.bulbs does not exist.  Generating one."
+	./kasa scan > ~/.bulbs
+fi
+
+IP=$(grep -i -- "-.*$1.*-" ~/.bulbs | cut -d' ' -f1)
+if [ -z "$IP" ]; then
+	echo "$1 not found in ~/.bulbs"
+	exit 1
+fi
+
+case "$2" in
+	on)  STATE=1 ;;
+	off) STATE=0 ;;
+	*)   usage   ;;
+esac
+
+HAS_RELAY=$(./kasa $IP '{"system":{"get_sysinfo":{}}}' | grep relay_state || true)
+if [ -n "$HAS_RELAY" ]; then
+	./kasa $IP '{"system":{"set_relay_state":{"state":'$STATE'}}}'
+	./kasa $IP '{"system":{"get_sysinfo":{}}}' | jq .system.get_sysinfo | grep relay_state
+else
+	./kasa 192.168.86.32 '{"smartlife.iot.smartbulb.lightingservice":{"transition_light_state":{"ignore_default":1,"on_off":'$STATE',"transition_period":250}}}'
+	./kasa $IP '{"system":{"get_sysinfo":{}}}' | jq .system.get_sysinfo.light_state
+fi

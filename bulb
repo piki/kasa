@@ -1,0 +1,191 @@
+#!/bin/bash
+#
+# Fancier version of kasa-wrapper, with support for dimmers, bulb
+# temperature, and bulb color, for devices that support it.
+
+DEFAULT_BULB="office.lamp"
+TRANSITION=450    # transition time, in ms
+TEMPERATURE=4300
+XCOLORS=$HOME/rgb.txt
+BULBCONF=$HOME/.bulbs
+
+run() {
+	$HOME/bin/kasa $@
+}
+
+cmd_get_info() {
+	echo '{"system":{"get_sysinfo":{}}}'
+}
+
+cmd_relay() {
+	echo '{"system":{"set_relay_state":{"state":'$1'}}}'
+}
+
+cmd_bulb_temperature() {
+	echo '{"smartlife.iot.smartbulb.lightingservice":{"transition_light_state":{"ignore_default":1,"on_off":1,"color_temp":'$1',"transition_period":'$TRANSITION'}}}'
+}
+
+cmd_bulb_state() {
+	echo '{"smartlife.iot.smartbulb.lightingservice":{"transition_light_state":{"ignore_default":1,"on_off":'$1',"transition_period":'$TRANSITION'}}}'
+}
+
+cmd_bulb_percentage() {
+	echo '{"smartlife.iot.smartbulb.lightingservice":{"transition_light_state":{"ignore_default":1,"on_off":1,"brightness":'$1',"transition_period":'$TRANSITION'}}}'
+}
+
+cmd_brightness() {
+	echo '{"smartlife.iot.dimmer":{"set_brightness":{"brightness":'$1'}}}'
+}
+
+cmd_hex() {
+	R=$[0x$(echo $1 | cut -c1-2)]
+	G=$[0x$(echo $1 | cut -c3-4)]
+	B=$[0x$(echo $1 | cut -c5-6)]
+	MAX_COLOR=$(printf '%s\n' $R $G $B | sort -n | tail -1)
+	MIN_COLOR=$(printf '%s\n' $R $G $B | sort -n | head -1)
+	if [ $MAX_COLOR -eq $MIN_COLOR ]; then
+		HUE=0
+	elif [ $R -eq $MAX_COLOR ]; then
+		HUE=$[60*($G-$B)/($MAX_COLOR-$MIN_COLOR)]
+	elif [ $G -eq $MAX_COLOR ]; then
+		HUE=$[60*($B-$R)/($MAX_COLOR-$MIN_COLOR)+120]
+	elif [ $B -eq $MAX_COLOR ]; then
+		HUE=$[60*($R-$G)/($MAX_COLOR-$MIN_COLOR)+240]
+	fi
+	BRIGHTNESS=$[($MAX_COLOR+$MIN_COLOR)/2*100/255]
+	if [ $MAX_COLOR -eq $MIN_COLOR ]; then
+		SATURATION=0
+	elif [ $BRIGHTNESS -le 127 ]; then
+		SATURATION=$[100 * ($MAX_COLOR-$MIN_COLOR) / ($MAX_COLOR+$MIN_COLOR)]
+	else
+		SATURATION=$[100 * ($MAX_COLOR-$MIN_COLOR) / (200 - $MAX_COLOR - $MIN_COLOR)]
+	fi
+	echo '{"smartlife.iot.smartbulb.lightingservice":{"transition_light_state":{"ignore_default":1,"on_off":1,"brightness":'$BRIGHTNESS',"hue":'$HUE',"saturation":'$SATURATION',"color_temp":0}}}'
+}
+
+usage() {
+	echo "Usage:"
+	echo "  $0 [device] [command]"
+	echo
+	echo "The device name should match a line in ~/.bulbs, which is just output"
+	echo "from 'kasa scan'."
+	echo
+	echo "Commands:"
+	echo "  on        - turn the device on"
+	echo "  off       - turn the device off"
+	echo "  colorname - set the bulb to a given X11 color"
+	echo "  XX%       - set the device to a % brightness"
+	echo "  #RRGGBB   - set the device to a color specification"
+	echo "  NNNN      - set the device to a Kelvin temperature"
+	echo "If no command is specified, toggle the device on/off."
+	exit 1
+}
+
+if [ "$1" = "scan" ]; then
+	run scan -t 5
+	exit 0
+fi
+
+if [ ! -r "$BULBCONF" ]; then
+	echo -n Creating $BULBCONF...
+	run scan -t 1 > $BULBCONF
+	echo " $(wc -l $BULBCONF | awk '{print $1}') bulbs found."
+	if [ ! -s "$BULBCONF" ]; then  # delete if empty
+		rm -f "$BULBCONF"
+		exit 1
+	fi
+fi
+
+IP=$(grep -i -- "-.*"$DEFAULT_BULB".*-" $BULBCONF | grep -wi -- "$DEFAULT_BULB" | head -1 | cut -d' ' -f1)
+
+# If the first argument looks like a bulb name, set the IP accordingly.
+LINE=$([ -n "$1" ] && grep -i -- "-.*$1.*-" $BULBCONF | grep -wi -- "$1" | head -1)
+if [ -n "$LINE" ]; then
+	IP=$(echo "$LINE" | cut -d' ' -f1)
+	shift
+fi
+
+# If there is a command, use it, otherwise set it to "on" or "off"
+# depending on the current state of the bulb.
+CMD="$1"
+CURRENT_STATE=$(run $IP $(cmd_get_info))
+HAS_RELAY=$(echo "$CURRENT_STATE" | jq '.system.get_sysinfo | has("relay_state")')
+HAS_BRIGHTNESS=$(echo "$CURRENT_STATE" | jq '.system.get_sysinfo | has("brightness")')
+IS_ON=$(echo "$CURRENT_STATE" | jq '.system.get_sysinfo.relay_state + .system.get_sysinfo.light_state.on_off')
+if [ -z "$CMD" ]; then
+	if [ "$IS_ON" -gt 0 ]; then
+		CMD=off
+	else
+		CMD=on
+	fi
+	echo Turning $IP $CMD
+fi
+
+# Interpret the command.
+case "$CMD" in
+	info)
+		echo $CURRENT_STATE | jq .
+		echo IP=$IP
+		echo HAS_RELAY=$HAS_RELAY
+		echo HAS_BRIGHTNESS=$HAS_BRIGHTNESS
+		echo IS_ON=$IS_ON
+		;;
+	on)
+		if $HAS_RELAY; then
+			run $IP $(cmd_relay 1)
+		else
+			run $IP $(cmd_bulb_temperature $TEMPERATURE)
+		fi
+		;;
+	off)
+		if $HAS_RELAY; then
+			run $IP $(cmd_relay 0)
+		else
+			run $IP $(cmd_bulb_state 0)
+		fi
+		;;
+	*%)
+		if ! $HAS_RELAY; then
+			run $IP $(cmd_bulb_percentage $(echo $CMD | tr -d '%'))
+		elif $HAS_BRIGHTNESS; then
+			run $IP $(cmd_brightness $(echo $CMD | tr -d '%'))
+		else
+			echo "Error: device does not support dimming"
+		fi
+		;;
+	\#*)
+		if ! $HAS_RELAY; then
+			run $IP $(cmd_hex $(echo $CMD | tr -d '#'))
+		else
+			echo "Error: device does not support color"
+		fi
+		;;
+	[2-6][0-9][0-9][0-9])
+		if ! $HAS_RELAY; then
+			run $IP $(cmd_bulb_temperature $CMD)
+		else
+			echo "Error: device does not support color temperature"
+		fi
+		;;
+	[A-Za-z]*)
+		if ! $HAS_RELAY; then
+			if [ ! -r "$XCOLORS" ]; then
+				echo "Can't translate $1 to a hex code without $XCOLORS file"
+				exit 1
+			fi
+			LINE=$(grep "\t$CMD\$" $XCOLORS | head -1)
+			if [ -n "$LINE" ]; then
+				HEX=$(printf "%02x%02x%02x" $(echo "$LINE" | cut -f1))
+				run $IP $(cmd_hex $HEX)
+			else
+				echo "No X11 color '$CMD' in $XCOLORS"
+				exit 1
+			fi
+		else
+			echo "Error: device does not support color"
+		fi
+		;;
+	*)
+		usage
+		;;
+esac
